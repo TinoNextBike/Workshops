@@ -1,5 +1,5 @@
 // script.js
-// Dynamic isochrones per workshop click + 15/30/45 vs 60 comparison popup + station filtering + toggle off on re-click
+// Isochrone Auto (90min) + Heatmap + Stationen + Werkstätten + temporäre Werkstätten
 
 // ---------- CONFIG ----------
 const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjJiMWZmNzYzNGZjMTRlYzlhODY0ZjMyOWE3ODFkNmVlIiwiaCI6Im11cm11cjY0In0=';
@@ -22,10 +22,7 @@ const workshopIcon= L.icon({ iconUrl: 'Icons/Workshop.png', iconSize: [32,32], i
 
 // ---------- LAYERS ----------
 const workshopsLayer = L.layerGroup().addTo(map);
-const isoLayer15 = L.layerGroup().addTo(map);
-const isoLayer30 = L.layerGroup().addTo(map);
-const isoLayer45 = L.layerGroup().addTo(map);
-const isoLayer60 = L.layerGroup().addTo(map);
+const isoLayer90 = L.layerGroup().addTo(map);
 const bikeCluster = L.markerClusterGroup({
   disableClusteringAtZoom: 15,
   iconCreateFunction: () => L.divIcon({
@@ -39,10 +36,7 @@ L.control.layers(null, {
   'Werkstätten': workshopsLayer,
   'Fahrradstationen': bikeCluster,
   'Gefilterte Stationen': filteredBikeLayer,
-  'Isochrone 15': isoLayer15,
-  'Isochrone 30': isoLayer30,
-  'Isochrone 45': isoLayer45,
-  'Isochrone 60': isoLayer60
+  'Isochrone 90min (Auto)': isoLayer90
 }).addTo(map);
 
 // ---------- UI CONTROL ----------
@@ -50,9 +44,6 @@ const AnalysisControl = L.Control.extend({
   onAdd: function () {
     const div = L.DomUtil.create('div', 'analysis-control');
     div.innerHTML = `
-      <button id="btn15">Vergleich 15 vs 60</button>
-      <button id="btn30">Vergleich 30 vs 60</button>
-      <button id="btn45">Vergleich 45 vs 60</button>
       <button id="btnHeat">Heatmap an/aus</button>
       <div style="margin-top:6px;font-size:12px;color:#444">Klicke zuerst eine Werkstatt</div>
     `;
@@ -71,7 +62,7 @@ let tempWorkshops = []; // speichert ALLE temporären Marker
 
 // Heatmap-Referenz
 let heatLayer = null;
-let heatVisible = true; // standardmäßig sichtbar (kann angepasst werden)
+let heatVisible = true; // standardmäßig sichtbar
 
 // ---------- HELPERS ----------
 function parseCoordVal(v){
@@ -99,12 +90,9 @@ function clearAll(){
   currentWorkshop = null;
 }
 
-// Rechtsklick: Alles zurücksetzen (belassen wir so, die Heatmap bleibt)
+// Rechtsklick: Alles zurücksetzen
 map.on('contextmenu', function () {
-  isoLayer15.clearLayers();
-  isoLayer30.clearLayers();
-  isoLayer45.clearLayers();
-  isoLayer60.clearLayers();
+  isoLayer90.clearLayers();
   filteredBikeLayer.clearLayers();
   currentWorkshop = null;
   currentIso = {};
@@ -118,7 +106,6 @@ async function loadStations(){
   const seenStations = new Set();
 
   try {
-    // lade alle NEXTBIKE_URLS (DE + AT)
     for (const url of NEXTBIKE_URLS){
       try {
         const res = await fetch(url);
@@ -152,22 +139,14 @@ async function loadStations(){
       }
     }
 
-    // --- Heatmap-Gewichtung: stationsData -> heatData ---
     if (typeof L.heatLayer !== 'function') {
-      console.warn('Leaflet.heat ist nicht geladen. Bitte <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script> einfügen.');
+      console.warn('Leaflet.heat ist nicht geladen.');
     } else {
-      // Bestimme höchsten bikes-Wert, damit wir normieren können
       const maxBikes = stationsData.reduce((m,s) => Math.max(m, (s.bikes||0)), 0);
+      const heatData = stationsData.map(s => [s.lat, s.lng, s.bikes || 0]);
 
-      const heatData = stationsData.map(s => {
-        // Gewicht ist Anzahl der verfügbaren Fahrräder (Dichte der Bikes)
-        return [s.lat, s.lng, s.bikes || 0];
-      });
-
-      // Alte Heatmap entfernen
       if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer);
 
-      // Neue Heatmap hinzufügen mit max = maxBikes
       heatLayer = L.heatLayer(heatData, {
         radius: 25,
         blur: 15,
@@ -175,9 +154,7 @@ async function loadStations(){
         max: maxBikes > 0 ? maxBikes : 1
       });
 
-      if (heatVisible) {
-        heatLayer.addTo(map);
-      }
+      if (heatVisible) heatLayer.addTo(map);
     }
 
   } catch (err) {
@@ -216,27 +193,35 @@ async function selectWorkshop(marker, lon, lat, title, addr, props) {
   currentWorkshop = { lon, lat, marker, props };
   try {
     await computeIsochronesForWorkshop(lon, lat);
-    showIso(60);
-    marker.setPopupContent(`<strong>${title}</strong><br>${addr}<br><em>Isochrone (60min) geladen</em>`);
-    map.setView([lat, lon], 13);
+    showIso(90);
+    marker.setPopupContent(`<strong>${title}</strong><br>${addr}<br><em>Isochrone (90min Auto) geladen</em>`);
+    map.setView([lat, lon], 11);
   } catch (e) {
     marker.setPopupContent(`<strong>${title}</strong><br>${addr}<br><span style="color:red">Isochronen Fehler</span>`);
   }
 }
 
 // ---------- COMPUTE ISOCHRONES ----------
+// nur 90 Minuten Isochrone (Auto)
 async function computeIsochronesForWorkshop(lon, lat){
-  const ranges = [15*60, 30*60, 45*60, 60*60];
   const url = 'https://api.openrouteservice.org/v2/isochrones/driving-car';
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Authorization': ORS_API_KEY,
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/json; charset=utf-8',
       'Accept': 'application/json, application/geo+json'
     },
-    body: JSON.stringify({ locations: [[lon, lat]], range: ranges })
+    body: JSON.stringify({
+      locations: [[lon, lat]],
+      range: [90 * 60],          // 90 Minuten = 5400 Sekunden
+      intersections: true,
+      location_type: "start",
+      range_type: "time",
+      smoothing: 0
+    })
   });
+
   const isojson = await res.json();
   currentIso = {};
   isojson.features.forEach(f => {
@@ -247,78 +232,20 @@ async function computeIsochronesForWorkshop(lon, lat){
 
 // ---------- SHOW / CLEAR ISO LAYERS ----------
 function clearIsoLayers(){
-  isoLayer15.clearLayers();
-  isoLayer30.clearLayers();
-  isoLayer45.clearLayers();
-  isoLayer60.clearLayers();
+  isoLayer90.clearLayers();
 }
 function showIso(mins){
   const featureCollection = currentIso[mins];
   if (!featureCollection) return;
-  const style = { color: mins === 60 ? '#0000FF' : (mins===15? '#7CFC00' : mins===30? '#FFA500' : '#FF0000'), weight: 1, fillOpacity: 0.18 };
-  const layerMap = { 15: isoLayer15, 30: isoLayer30, 45: isoLayer45, 60: isoLayer60 };
-  L.geoJSON(featureCollection, { style }).addTo(layerMap[mins]);
-}
-
-// ---------- COUNT & SHOW BIKES INSIDE ----------
-function getStationsInFeature(featureCollection){
-  if (!featureCollection || !featureCollection.features.length) return [];
-  const poly = featureCollection.features[0];
-  return stationsData.filter(s => {
-    const pt = turf.point([s.lng, s.lat]);
-    return turf.booleanPointInPolygon(pt, poly);
-  });
+  const style = { color: '#0000FF', weight: 2, fillOpacity: 0.2 };
+  L.geoJSON(featureCollection, { style }).addTo(isoLayer90);
 }
 
 // ---------- BUTTON HANDLERS ----------
-let comparePopups = [];
-
-async function handleCompare(minSmall){
-  if (!currentWorkshop || !currentIso[60]) {
-    alert('Bitte zuerst eine Werkstatt klicken.');
-    return;
-  }
-  const smallIso = currentIso[minSmall];
-  const bigIso = currentIso[60];
-  if (!smallIso || !bigIso) return;
-
-  filteredBikeLayer.clearLayers();
-
-  L.geoJSON(smallIso, { style: { color:'#00A', weight:1, fillOpacity:0.2 } }).addTo(
-    minSmall === 15 ? isoLayer15 : minSmall === 30 ? isoLayer30 : isoLayer45
-  );
-  L.geoJSON(bigIso, { style: { color:'#0000FF', weight:1, fillOpacity:0.12 } }).addTo(isoLayer60);
-
-  const smallStations = getStationsInFeature(smallIso);
-  smallStations.forEach(s => {
-    const icon = s.bikes === 0 ? breakIcon : defaultIcon;
-    L.marker([s.lat, s.lng], { icon }).bindPopup(stationPopupHtml(s)).addTo(filteredBikeLayer);
-  });
-
-  const smallCount = smallStations.reduce((sum,s)=>sum+(s.bikes||0),0);
-  const bigCount   = getStationsInFeature(bigIso).reduce((sum,s)=>sum+(s.bikes||0),0);
-
-  const popupLatLng = centroidOfFeature(bigIso);
-  const popupHtml =
-    `<div style="font-weight:600">Vergleich ${minSmall}min vs 60min</div>` +
-    `<div>🚲 ${minSmall}min: <strong>${smallCount}</strong> verfügbare Räder</div>` +
-    `<div>🚲 60min: <strong>${bigCount}</strong> verfügbare Räder</div>`;
-
-  L.popup({ maxWidth: 320, autoClose: false, closeOnClick: false })
-    .setLatLng(popupLatLng)
-    .setContent(popupHtml)
-    .addTo(map);
-}
-
-// Event-Handler für Compare + Heat Toggle
 document.addEventListener('click', (ev) => {
-  if (ev.target.id === 'btn15') handleCompare(15);
-  if (ev.target.id === 'btn30') handleCompare(30);
-  if (ev.target.id === 'btn45') handleCompare(45);
-
   if (ev.target.id === 'btnHeat') {
     if (!heatLayer) {
-      alert('Heatmap noch nicht initialisiert — bitte Seite neu laden oder Stationsdaten neu laden.');
+      alert('Heatmap noch nicht initialisiert.');
       return;
     }
     if (map.hasLayer(heatLayer)) {
@@ -346,9 +273,6 @@ map.addControl(new TempWorkshopControl({ position: 'topleft' }));
 
 map.on('click', async (e) => {
   if (!tempWorkshopMode) {
-    if (!e.originalEvent.target.closest('.leaflet-popup') && !e.originalEvent.target.closest('.analysis-control')) {
-      // clearAll();
-    }
     return;
   }
   tempWorkshopMode = false;
