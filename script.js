@@ -227,7 +227,7 @@ async function selectWorkshop(marker, lon, lat, title, addr, props) {
 // ---------- COMPUTE ISOCHRONES ----------
 async function computeIsochronesForWorkshop(lon, lat){
   const ranges = [15*60, 30*60, 45*60, 60*60];
-  const url = 'https://api.openrouteservice.org/v2/isochrones/cycling-regular';
+  const url = 'https://api.openrouteservice.org/v2/isochrones/driving-car';
   const res = await fetch(url, {
     method: 'POST',
     headers: {
